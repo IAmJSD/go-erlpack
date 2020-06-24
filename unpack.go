@@ -9,6 +9,10 @@ import (
 	"unsafe"
 )
 
+var errorInterface = reflect.TypeOf((*error)(nil)).Elem()
+
+var uncastedResultType = reflect.TypeOf((*UncastedResult)(nil))
+
 // Atom is used to define an atom within the codebase.
 type Atom string
 
@@ -207,6 +211,25 @@ func handleItemCasting(Item, Ptr interface{}) (bool, error) {
 		case reflect.Struct:
 			// Make the new struct.
 			i := reflect.New(r.Elem().Type())
+
+			// Check if the struct has a "UncastedErlpack" function. If so, call that and return any errors.
+			function := i.MethodByName("UncastedErlpack")
+			if function.IsValid() {
+				if function.Type().NumIn() != 1 {
+					return false, errors.New("only *UncastedResult is expected as an argument")
+				}
+				if function.Type().In(0) != uncastedResultType {
+					return false, errors.New("only *UncastedResult is expected as a result")
+				}
+				if function.Type().NumOut() != 1 {
+					return false, errors.New("only error is expected as a result")
+				}
+				if !function.Type().Out(0).Implements(errorInterface) {
+					return false, errors.New("result is not error")
+				}
+				f := function.Interface().(func(*UncastedResult) error)
+				return false, f(&UncastedResult{item: Item})
+			}
 
 			// Get the struct object.
 			s := structs.New(i.Interface())
