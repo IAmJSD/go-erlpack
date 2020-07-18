@@ -6,9 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/jakemakesstuff/structs"
+	"io"
 	"reflect"
 	"unsafe"
 )
+
+// Contains all the types we want internally for our reader.
+type unpackReader interface {
+	io.ByteReader
+	io.Reader
+}
 
 var errorInterface = reflect.TypeOf((*error)(nil)).Elem()
 
@@ -351,18 +358,17 @@ func processAtom(Data []byte) interface{} {
 }
 
 // Process the raw data.
-func processRawData(DataType byte, setter *pointerSetter, r *bytes.Reader, jsonType bool) error {
+func processRawData(DataType byte, setter *pointerSetter, r unpackReader, jsonType bool) error {
 	// Defines the byte array it'll go into.
 	var bytes []byte
 
 	// Get the right data type.
 	switch DataType {
 	case 's': // atom
-		if r.Len() == 0 {
-			// Byte slice is too small.
-			return errors.New("atom information missing")
+		b, err := r.ReadByte()
+		if err != nil {
+			return err
 		}
-		b, _ := r.ReadByte()
 		Len := int(b)
 		bytes = make([]byte, Len+2)
 		bytes[0] = 's'
@@ -522,7 +528,7 @@ func processRawData(DataType byte, setter *pointerSetter, r *bytes.Reader, jsonT
 }
 
 // Processes a item.
-func processItem(setter *pointerSetter, r *bytes.Reader) error {
+func processItem(setter *pointerSetter, r unpackReader) error {
 	// Gets the type of data.
 	DataType, err := r.ReadByte()
 	if err != nil {
@@ -542,11 +548,10 @@ func processItem(setter *pointerSetter, r *bytes.Reader) error {
 	switch DataType {
 	case 's': // atom
 		// Get the atom information.
-		if r.Len() == 0 {
-			// Byte slice is too small.
-			return errors.New("atom information missing")
+		b, err := r.ReadByte()
+		if err != nil {
+			return err
 		}
-		b, _ := r.ReadByte()
 		Len := int(b)
 		Data := make([]byte, Len)
 		for Total := 0; Total != Len; Total++ {
@@ -708,9 +713,25 @@ func processItem(setter *pointerSetter, r *bytes.Reader) error {
 	return handleItemCasting(Item, setter)
 }
 
-// Unpack is used to unpack a value to a pointer.
+// Create a special reader that handles all types we need for ease of user.
+// If the reader doesn't contain io.ByteReader, this contains the code to do this for you.
+type byteReaderUpgrader struct {
+	io.Reader
+}
+
+// ReadByte is used to read a byte.
+func (r *byteReaderUpgrader) ReadByte() (byte, error) {
+	if reader, ok := r.Reader.(io.ByteReader); ok {
+		return reader.ReadByte()
+	}
+	ob := make([]byte, 1)
+	_, err := r.Reader.Read(ob)
+	return ob[0], err
+}
+
+// UnpackReader is used to unpack a value to a pointer from a reader.
 // Note that to ensure compatibility in codebases where you have both erlpack and json, json.RawMessage is treated the same as erlpack.RawData.
-func Unpack(Data []byte, Ptr interface{}) error {
+func UnpackReader(reader io.Reader, Ptr interface{}) error {
 	// Check if the ptr is actually a pointer.
 	v := &pointerSetter{ptr: reflect.ValueOf(Ptr)}
 	if v.ptr.Kind() != reflect.Ptr {
@@ -722,14 +743,8 @@ func Unpack(Data []byte, Ptr interface{}) error {
 		return errors.New("invalid erlpack bytes")
 	}
 
-	// Create a bytes reader.
-	r := bytes.NewReader(Data)
-
-	// Check the length.
-	l := len(Data)
-	if 2 > l {
-		return err()
-	}
+	// Get the reader.
+	r := &byteReaderUpgrader{reader}
 
 	// Check the version.
 	Version, _ := r.ReadByte()
@@ -739,4 +754,14 @@ func Unpack(Data []byte, Ptr interface{}) error {
 
 	// Return the data unpacking.
 	return processItem(v, r)
+}
+
+// Unpack is used to unpack a value to a pointer.
+// Note that to ensure compatibility in codebases where you have both erlpack and json, json.RawMessage is treated the same as erlpack.RawData.
+func Unpack(Data []byte, Ptr interface{}) error {
+	l := len(Data)
+	if 2 > l {
+		return errors.New("erlpack bytes cannot be shorter than 2 bytes")
+	}
+	return UnpackReader(bytes.NewReader(Data), Ptr)
 }
