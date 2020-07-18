@@ -2,6 +2,7 @@ package erlpack
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/jakemakesstuff/structs"
@@ -157,6 +158,7 @@ func packBool(Data bool, pad *scratchpad) {
 }
 
 // Pack is used to pack a interface given to it.
+// Note that to ensure compatibility in codebases where you have both erlpack and json, json.RawMessage is treated the same as erlpack.RawData.
 func Pack(Interface interface{}) ([]byte, error) {
 	// Create a scratchpad which will be used for creating this.
 	pad := newScratchpad(INITIAL_ALLOC)
@@ -165,7 +167,15 @@ func Pack(Interface interface{}) ([]byte, error) {
 	// Add a switch for the type.
 	var handler func(i interface{}) error
 	handler = func(i interface{}) error {
-		switch i.(type) {
+		switch b := i.(type) {
+		case json.RawMessage:
+			// Just add the raw data (compatibility for libs using both erlpack and json).
+			pad.endAppend(b...)
+			return nil
+		case RawData:
+			// Just add the raw data.
+			pad.endAppend(b...)
+			return nil
 		case nil:
 			// Pack the nil bytes and return nil.
 			packNil(pad)

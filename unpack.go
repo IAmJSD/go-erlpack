@@ -3,6 +3,7 @@ package erlpack
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"github.com/jakemakesstuff/structs"
 	"reflect"
@@ -16,6 +17,19 @@ var uncastedResultType = reflect.TypeOf((*UncastedResult)(nil))
 // Atom is used to define an atom within the codebase.
 type Atom string
 
+// RawData is used to define data which was within an Erlpack array but has not been parsed yet.
+// This is different to UncastedResult since it has not been processed yet.
+type RawData []byte
+
+// Cast is used to cast the result to a pointer.
+func (r RawData) Cast(Ptr interface{}) error {
+	v := &pointerSetter{ptr: reflect.ValueOf(Ptr)}
+	if v.ptr.Kind() != reflect.Ptr {
+		return errors.New("invalid pointer")
+	}
+	return processItem(v, bytes.NewReader(r))
+}
+
 // UncastedResult is used to define a result which has not been casted yet.
 // You can call Cast on this to cast the item after the initial unpacking.
 type UncastedResult struct {
@@ -24,7 +38,11 @@ type UncastedResult struct {
 
 // Cast is used to cast the result to a pointer.
 func (u *UncastedResult) Cast(Ptr interface{}) error {
-	return handleItemCasting(u.item, &pointerSetter{ptr: reflect.ValueOf(Ptr)})
+	v := &pointerSetter{ptr: reflect.ValueOf(Ptr)}
+	if v.ptr.Kind() != reflect.Ptr {
+		return errors.New("invalid pointer")
+	}
+	return handleItemCasting(u.item, v)
 }
 
 // Used to cast the item.
@@ -332,6 +350,177 @@ func processAtom(Data []byte) interface{} {
 	}
 }
 
+// Process the raw data.
+func processRawData(DataType byte, setter *pointerSetter, r *bytes.Reader, jsonType bool) error {
+	// Defines the byte array it'll go into.
+	var bytes []byte
+
+	// Get the right data type.
+	switch DataType {
+	case 's': // atom
+		if r.Len() == 0 {
+			// Byte slice is too small.
+			return errors.New("atom information missing")
+		}
+		b, _ := r.ReadByte()
+		Len := int(b)
+		bytes = make([]byte, Len+2)
+		bytes[0] = 's'
+		bytes[1] = b
+		for Total := 0; Total != Len; Total++ {
+			b, err := r.ReadByte()
+			if err != nil {
+				return errors.New("atom size larger than remainder of array")
+			}
+			bytes[Total+2] = b
+		}
+	case 'j': // blank list
+		bytes = []byte{'j'}
+	case 'l': // list
+		// Get the length of the list.
+		lengthBytes := make([]byte, 4)
+		_, err := r.Read(lengthBytes)
+		if err != nil {
+			return errors.New("not enough bytes for list length")
+		}
+		l := binary.BigEndian.Uint32(lengthBytes)
+		bytes = make([]byte, 5, (l*3)+5)
+		bytes[0] = 'l'
+		for i := uint8(0); i < 4; i++ {
+			bytes[i+1] = lengthBytes[i]
+		}
+
+		// Try and get each item from the list.
+		for i := 0; i < int(l); i++ {
+			DataType, err := r.ReadByte()
+			if err != nil {
+				return errors.New("not long enough to include data type")
+			}
+			var raw RawData
+			itemSetter := &pointerSetter{ptr: reflect.ValueOf(&raw)}
+			if err = processRawData(DataType, itemSetter, r, false); err != nil {
+				return err
+			}
+			bytes = append(bytes, raw...)
+		}
+	case 'm': // string
+		// Get the length of the string.
+		lengthBytes := make([]byte, 4)
+		_, err := r.Read(lengthBytes)
+		if err != nil {
+			return errors.New("not enough bytes for list length")
+		}
+		l := binary.BigEndian.Uint32(lengthBytes)
+
+		// Create the byte array.
+		Len := int(l)
+		bytes = make([]byte, Len+5)
+		bytes[0] = 'm'
+		for i := uint8(0); i < 4; i++ {
+			bytes[i+1] = lengthBytes[i]
+		}
+
+		// Write each byte.
+		for Total := 0; Total != Len; Total++ {
+			b, err := r.ReadByte()
+			if err != nil {
+				return errors.New("atom size larger than remainder of array")
+			}
+			bytes[Total+5] = b
+		}
+	case 'a': // small int
+		i, err := r.ReadByte()
+		if err != nil {
+			return errors.New("failed to read small int")
+		}
+		bytes = []byte{'a', i}
+	case 'b': // int32
+		b := make([]byte, 4)
+		_, err := r.Read(b)
+		if err != nil {
+			return errors.New("not enough bytes for int32")
+		}
+		bytes = append([]byte{'b'}, b...)
+	case 'n': // int64
+		// Get the number of encoded bytes.
+		encodedBytes, err := r.ReadByte()
+		if err != nil {
+			return errors.New("unable to read int64 byte count")
+		}
+
+		// Create the byte array.
+		bytes = make([]byte, encodedBytes+2)
+		bytes[0] = 'n'
+		bytes[1] = encodedBytes
+
+		// Write each byte.
+		for Total := uint8(0); Total != encodedBytes; Total++ {
+			b, err := r.ReadByte()
+			if err != nil {
+				return errors.New("int size larger than remainder of array")
+			}
+			bytes[Total+2] = b
+		}
+	case 'F': // float
+		// Get the next 8 bytes.
+		bytes = make([]byte, 9)
+		bytes[0] = 'F'
+		for i := uint8(0); i < 8; i++ {
+			b, err := r.ReadByte()
+			if err != nil {
+				return errors.New("float size larger than remainder of array")
+			}
+			bytes[i+1] = b
+		}
+	case 't': // map
+		// Get the length of the map.
+		lengthBytes := make([]byte, 4)
+		_, err := r.Read(lengthBytes)
+		if err != nil {
+			return errors.New("not enough bytes for list length")
+		}
+		l := binary.BigEndian.Uint32(lengthBytes)
+		bytes = make([]byte, 5, (l*6)+5)
+		bytes[0] = 't'
+		for i := uint8(0); i < 4; i++ {
+			bytes[i+1] = lengthBytes[i]
+		}
+
+		// Try and get each item from the map.
+		for i := 0; i < int(l); i++ {
+			DataType, err := r.ReadByte()
+			if err != nil {
+				return errors.New("not long enough to include data type")
+			}
+			var raw RawData
+			itemSetter := &pointerSetter{ptr: reflect.ValueOf(&raw)}
+			if err = processRawData(DataType, itemSetter, r, false); err != nil {
+				return err
+			}
+			bytes = append(bytes, raw...)
+			DataType, err = r.ReadByte()
+			if err != nil {
+				return errors.New("not long enough to include data type")
+			}
+			if err = processRawData(DataType, itemSetter, r, false); err != nil {
+				return err
+			}
+			bytes = append(bytes, raw...)
+		}
+	default:
+		return errors.New("unknown data type")
+	}
+
+	// Handle processing the pointer.
+	if jsonType {
+		x := (json.RawMessage)(bytes)
+		return setter.set(reflect.ValueOf(&x))
+	} else {
+		x := (RawData)(bytes)
+		return setter.set(reflect.ValueOf(&x))
+	}
+}
+
 // Processes a item.
 func processItem(setter *pointerSetter, r *bytes.Reader) error {
 	// Gets the type of data.
@@ -339,6 +528,16 @@ func processItem(setter *pointerSetter, r *bytes.Reader) error {
 	if err != nil {
 		return errors.New("not long enough to include data type")
 	}
+
+	// Check if this is meant to be raw data and process that differently if so.
+	switch setter.getBasePtr().(type) {
+	case *json.RawMessage:
+		return processRawData(DataType, setter, r, true)
+	case *RawData:
+		return processRawData(DataType, setter, r, false)
+	}
+
+	// Handle the various different data types.
 	var Item interface{}
 	switch DataType {
 	case 's': // atom
@@ -350,18 +549,12 @@ func processItem(setter *pointerSetter, r *bytes.Reader) error {
 		b, _ := r.ReadByte()
 		Len := int(b)
 		Data := make([]byte, Len)
-		Total := 0
-		for {
-			if Total == Len {
-				// We have all the information we need.
-				break
-			}
+		for Total := 0; Total != Len; Total++ {
 			b, err := r.ReadByte()
 			if err != nil {
 				return errors.New("atom size larger than remainder of array")
 			}
 			Data[Total] = b
-			Total++
 		}
 		Item = processAtom(Data)
 	case 'j': // blank list
@@ -516,6 +709,7 @@ func processItem(setter *pointerSetter, r *bytes.Reader) error {
 }
 
 // Unpack is used to unpack a value to a pointer.
+// Note that to ensure compatibility in codebases where you have both erlpack and json, json.RawMessage is treated the same as erlpack.RawData.
 func Unpack(Data []byte, Ptr interface{}) error {
 	// Check if the ptr is actually a pointer.
 	v := &pointerSetter{ptr: reflect.ValueOf(Ptr)}

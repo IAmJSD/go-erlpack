@@ -1,6 +1,8 @@
 package erlpack
 
 import (
+	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 )
@@ -24,6 +26,39 @@ func TestUnpackTrue(t *testing.T) {
 		t.Fatal(err)
 	}
 	if s != "true" {
+		t.Fatal("didn't deserialize properly")
+	}
+}
+
+func bytesAssert(a, b []byte) error {
+	if len(a) != len(b) {
+		return errors.New(fmt.Sprintln("bytes are not the same length (", a, b, ")"))
+	}
+	for i, v := range a {
+		if b[i] != v {
+			return errors.New(fmt.Sprintln("index", i, "is not the same (", a, b, ")"))
+		}
+	}
+	return nil
+}
+
+// TestUnpackTrueRawData is used to unpack the true boolean as RawData.
+func TestUnpackTrueRawData(t *testing.T) {
+	var x RawData
+	err := Unpack([]byte("\x83s\x04true"), &x)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = bytesAssert([]byte("s\x04true"), x)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b bool
+	err = x.Cast(&b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !b {
 		t.Fatal("didn't deserialize properly")
 	}
 }
@@ -123,6 +158,30 @@ func TestUnpackArray(t *testing.T) {
 	}
 }
 
+// TestUnpackArrayRawData is used to unpack a array as RawData.
+func TestUnpackArrayRawData(t *testing.T) {
+	var r RawData
+	err := Unpack([]byte("\x83l\x00\x00\x00\x01a\x01"), &r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = bytesAssert([]byte("l\x00\x00\x00\x01a\x01"), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a []int
+	err = r.Cast(&a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(a) != 1 {
+		t.Fatal("length is not 1")
+	}
+	if a[0] != 1 {
+		t.Fatal("should be 1")
+	}
+}
+
 // TestUnpackEmptyArray is used to unpack an empty array.
 func TestUnpackEmptyArray(t *testing.T) {
 	packed := []byte("\x83j")
@@ -180,6 +239,31 @@ func TestUnpackMap(t *testing.T) {
 	}
 }
 
+// TestUnpackMapRawData is used to unpack a map as RawData.
+func TestUnpackMapRawData(t *testing.T) {
+	var r RawData
+	err := Unpack([]byte("\x83t\x00\x00\x00\x01m\x00\x00\x00\x01aa\x01"), &r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = bytesAssert([]byte("t\x00\x00\x00\x01m\x00\x00\x00\x01aa\x01"), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var x map[string]int
+	err = r.Cast(&x)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i, ok := x["a"]
+	if !ok {
+		t.Fatal("not ok")
+	}
+	if i != 1 {
+		t.Fatal("not 1")
+	}
+}
+
 // TestUnpackStruct is used to test unpacking to a struct.
 func TestUnpackStruct(t *testing.T) {
 	type test struct {
@@ -187,6 +271,30 @@ func TestUnpackStruct(t *testing.T) {
 	}
 	var x test
 	err := Unpack([]byte("\x83t\x00\x00\x00\x01m\x00\x00\x00\x01aa\x01"), &x)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *x.A != 1 {
+		t.Fatal("not 1")
+	}
+}
+
+// TestUnpackStruct is used to unpack a struct as RawData.
+func TestUnpackStructRawData(t *testing.T) {
+	var r RawData
+	err := Unpack([]byte("\x83t\x00\x00\x00\x01m\x00\x00\x00\x01aa\x01"), &r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = bytesAssert([]byte("t\x00\x00\x00\x01m\x00\x00\x00\x01aa\x01"), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type test struct {
+		A *int `erlpack:"a"`
+	}
+	var x test
+	err = r.Cast(&x)
 	if err != nil {
 		t.Fatal(err)
 	}

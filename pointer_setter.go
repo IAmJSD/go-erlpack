@@ -6,15 +6,21 @@ import (
 )
 
 type pointerSetter struct {
-	ptr reflect.Value
+	ptr       reflect.Value
+	baseCache *interface{}
 }
 
 func (s *pointerSetter) getBasePtr() interface{} {
+	if s.baseCache != nil {
+		return *s.baseCache
+	}
 	x := s.ptr.Type()
 	for x.Kind() == reflect.Ptr {
 		x = x.Elem()
 		if x.Kind() != reflect.Ptr {
-			return reflect.NewAt(x,nil).Interface()
+			res := reflect.NewAt(x, nil).Interface()
+			s.baseCache = &res
+			return res
 		}
 	}
 	panic("not a pointer - this is a go-erlpack bug, this should be caught in the public functions!")
