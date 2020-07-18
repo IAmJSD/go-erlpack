@@ -24,211 +24,174 @@ type UncastedResult struct {
 
 // Cast is used to cast the result to a pointer.
 func (u *UncastedResult) Cast(Ptr interface{}) error {
-	n, err := handleItemCasting(u.item, Ptr)
-	if err != nil {
-		return err
-	}
-	if n {
-		return errors.New("nillable type used without pointer to pointer")
-	}
-	return nil
+	return handleItemCasting(u.item, &pointerSetter{ptr: reflect.ValueOf(Ptr)})
 }
 
 // Used to cast the item.
-func handleItemCasting(Item, Ptr interface{}) (bool, error) {
-	// Get the reflect value.
-	r := reflect.ValueOf(Ptr)
-
-	// Handle double pointers.
-	if r.Elem().Kind() == reflect.Ptr {
-		// Create the inner pointer.
-		ptr := reflect.New(r.Elem().Type().Elem())
-
-		// Call this function.
-		n, err := handleItemCasting(Item, ptr.Interface())
-		if err != nil {
-			return false, err
-		}
-
-		// Set the element.
-		if n {
-			r.Elem().Set(reflect.Zero(r.Elem().Type()))
-		} else {
-			r.Elem().Set(ptr)
-		}
-
-		// Return not nillable (this is handled here, the base pointer shouldn't be) and no errors.
-		return false, nil
-	}
+func handleItemCasting(Item interface{}, setter *pointerSetter) error {
+	// Get the base pointer.
+	Ptr := setter.getBasePtr()
 
 	// Handle a interface or uncasted result.
-	switch x := Ptr.(type) {
+	switch Ptr.(type) {
 	case *interface{}:
-		*x = Item
-		return false, nil
+		return setter.set(reflect.ValueOf(&Item))
 	case *UncastedResult:
-		*x = UncastedResult{item: Item}
-		return false, nil
+		return setter.set(reflect.ValueOf(&UncastedResult{item: Item}))
 	}
 
 	// Handle specific type casting.
 	switch x := Item.(type) {
 	case Atom:
-		switch y := Ptr.(type) {
+		switch Ptr.(type) {
 		case *Atom:
-			*y = x
-			return false, nil
+			return setter.set(reflect.ValueOf(&x))
 		}
 	case int64:
-		switch p := Ptr.(type) {
+		switch Ptr.(type) {
 		case *int:
-			*p = int(x)
+			p := int(x)
+			return setter.set(reflect.ValueOf(&p))
 		case *int64:
-			*p = x
+			return setter.set(reflect.ValueOf(&x))
 		default:
-			return false, errors.New("could not de-serialize into int")
+			return errors.New("could not de-serialize into int")
 		}
-		return false, nil
 	case int32:
-		switch p := Ptr.(type) {
+		switch Ptr.(type) {
 		case *int:
-			*p = int(x)
+			p := int(x)
+			return setter.set(reflect.ValueOf(&p))
 		case *int32:
-			*p = x
+			return setter.set(reflect.ValueOf(&x))
 		default:
-			return false, errors.New("could not de-serialize into int")
+			return errors.New("could not de-serialize into int")
 		}
-		return false, nil
 	case float64:
-		switch p := Ptr.(type) {
+		switch Ptr.(type) {
 		case *float64:
-			*p = x
+			return setter.set(reflect.ValueOf(&x))
 		default:
-			return false, errors.New("could not de-serialize into float64")
+			return errors.New("could not de-serialize into float64")
 		}
-		return false, nil
 	case uint8:
-		switch p := Ptr.(type) {
+		switch Ptr.(type) {
 		case *uint:
-			*p = uint(x)
+			p := uint(x)
+			return setter.set(reflect.ValueOf(&p))
 		case *uint8:
-			*p = x
+			return setter.set(reflect.ValueOf(&x))
 		case *int:
-			*p = int(x)
+			p := int(x)
+			return setter.set(reflect.ValueOf(&p))
 		default:
-			return false, errors.New("could not de-serialize into uint8")
+			return errors.New("could not de-serialize into uint8")
 		}
-		return false, nil
 	case string:
 		// Map key.
-		switch p := Ptr.(type) {
+		switch Ptr.(type) {
 		case *string:
-			*p = x
+			p := x
+			return setter.set(reflect.ValueOf(&p))
 		default:
-			return false, errors.New("could not de-serialize into string")
+			return errors.New("could not de-serialize into string")
 		}
-		return false, nil
 	case []byte:
 		// We should try and string-ify this if possible.
-		switch p := Ptr.(type) {
+		switch Ptr.(type) {
 		case *string:
-			*p = string(x)
+			p := string(x)
+			return setter.set(reflect.ValueOf(&p))
 		case *[]byte:
-			*p = x
+			return setter.set(reflect.ValueOf(&x))
 		default:
-			return false, errors.New("could not de-serialize into string")
+			return errors.New("could not de-serialize into string")
 		}
-		return false, nil
 	case bool:
 		// This should cast into either a string or a boolean.
-		switch p := Ptr.(type) {
+		switch Ptr.(type) {
 		case *Atom:
 			// Set it to a string representation of the value.
+			var p Atom
 			if x {
-				*p = "true"
+				p = "true"
 			} else {
-				*p = "false"
+				p = "false"
 			}
-			return false, nil
+			return setter.set(reflect.ValueOf(&p))
 		case *bool:
 			// Set it to the raw value.
-			*p = x
-			return false, nil
+			return setter.set(reflect.ValueOf(&x))
 		}
 	case nil:
 		// This should zero any data types other than atoms.
-		switch p := Ptr.(type) {
+		switch Ptr.(type) {
 		case *Atom:
 			// We should set this to "nil".
-			*p = "nil"
-			return false, nil
+			nils := (Atom)("nil")
+			return setter.set(reflect.ValueOf(&nils))
 		default:
-			// Zero the pointer which is provided.
-			return true, nil
+			// Set to nil.
+			return setter.set(reflect.ValueOf(Ptr))
 		}
 	case []interface{}:
 		// We should handle this array.
-		switch p := Ptr.(type) {
+		switch Ptr.(type) {
 		case *[]interface{}:
 			// This is simple.
-			*p = x
-			return false, nil
+			return setter.set(reflect.ValueOf(&x))
 		default:
-			// Create the new array.
-			a := reflect.MakeSlice(r.Elem().Type(), len(x), len(x))
+			// Get the reflect value.
+			r := reflect.MakeSlice(reflect.ValueOf(Ptr).Type().Elem(), len(x), len(x))
 
 			// Set all the items.
 			for i, v := range x {
-				indexItem := a.Index(i)
+				indexItem := r.Index(i)
 				x := reflect.New(indexItem.Type())
 				t := x.Interface()
-				_, err := handleItemCasting(v, t)
+				err := handleItemCasting(v, &pointerSetter{ptr: reflect.ValueOf(t)})
 				if err != nil {
-					return false, err
+					return err
 				}
 				indexItem.Set(x.Elem())
 			}
 
-			// Set the pointer to the item.
-			e := reflect.ValueOf(p).Elem()
-			e.Set(a)
-
-			// Return no errors.
-			return false, nil
+			// Create the pointer.
+			ptr := reflect.New(reflect.PtrTo(r.Type()).Elem())
+			ptr.Elem().Set(r)
+			return setter.set(ptr)
 		}
 	case map[interface{}]interface{}:
 		// Maps are complicated since they can serialize into a lot of different types.
-
-		switch p := Ptr.(type) {
+		switch Ptr.(type) {
 		case *map[interface{}]interface{}:
 			// This is the first thing we check for since it is by far the best situation.
-			*p = x
-			return false, nil
+			return setter.set(reflect.ValueOf(&x))
 		}
 
 		// Check the type of the pointer.
-		switch r.Elem().Kind() {
+		switch e := reflect.ValueOf(Ptr).Type().Elem(); e.Kind() {
 		case reflect.Struct:
 			// Make the new struct.
-			i := reflect.New(r.Elem().Type())
+			i := reflect.New(e)
 
 			// Check if the struct has a "UncastedErlpack" function. If so, call that and return any errors.
 			function := i.MethodByName("UncastedErlpack")
 			if function.IsValid() {
 				if function.Type().NumIn() != 1 {
-					return false, errors.New("only *UncastedResult is expected as an argument")
+					return errors.New("only *UncastedResult is expected as an argument")
 				}
 				if function.Type().In(0) != uncastedResultType {
-					return false, errors.New("only *UncastedResult is expected as a result")
+					return errors.New("only *UncastedResult is expected as a result")
 				}
 				if function.Type().NumOut() != 1 {
-					return false, errors.New("only error is expected as a result")
+					return errors.New("only error is expected as a result")
 				}
 				if !function.Type().Out(0).Implements(errorInterface) {
-					return false, errors.New("result is not error")
+					return errors.New("result is not error")
 				}
 				f := function.Interface().(func(*UncastedResult) error)
-				return false, f(&UncastedResult{item: Item})
+				return f(&UncastedResult{item: Item})
 			}
 
 			// Get the struct object.
@@ -239,7 +202,11 @@ func handleItemCasting(Item, Ptr interface{}) (bool, error) {
 			tag2field := map[string]string{}
 			for _, field := range s.Fields() {
 				t := field.Tag("erlpack")
-				if t != "" && t != "-" {
+				if t != "-" {
+					if t == "" {
+						tag2field[field.Name()] = field.Name()
+						continue
+					}
 					tag2field[t] = field.Name()
 				}
 			}
@@ -254,31 +221,30 @@ func handleItemCasting(Item, Ptr interface{}) (bool, error) {
 					}
 					field, ok := s.FieldOk(fieldName)
 					if !ok {
-						return false, errors.New("failed to get field")
+						return errors.New("failed to get field")
 					}
 					r := reflect.New(field.Type())
 					x := r.Interface()
-					_, err := handleItemCasting(v, x)
+					err := handleItemCasting(v, &pointerSetter{ptr: reflect.ValueOf(x)})
 					if err != nil {
-						return false, err
+						return err
 					}
 					err = field.Set(r.Elem().Interface())
 					if err != nil {
-						return false, err
+						return err
 					}
 				default:
-					return false, errors.New("key must be string")
+					return errors.New("key must be string")
 				}
 			}
 
-			// Set to the interface.
-			r.Elem().Set(i.Elem())
-
-			// Return no errors.
-			return false, nil
+			// Create the pointer.
+			ptr := reflect.New(reflect.PtrTo(e).Elem())
+			ptr.Elem().Set(i.Elem())
+			return setter.set(ptr)
 		case reflect.Map:
 			// Make the new map.
-			m := reflect.MakeMap(r.Elem().Type())
+			m := reflect.MakeMap(e)
 
 			// Get the key type.
 			keyType := m.Type().Key()
@@ -289,44 +255,44 @@ func handleItemCasting(Item, Ptr interface{}) (bool, error) {
 			// Iterate through the map.
 			for k, v := range x {
 				// Create a new version of the key with the reflect type.
-				reflectKey := reflect.New(keyType)
-				iface := reflectKey.Interface()
+				reflectKey := reflect.Zero(keyType)
+				pptr := reflect.New(reflect.PtrTo(reflectKey.Type()).Elem())
+				pptr.Elem().Set(reflectKey)
 
 				// Handle the item casting for the key.
-				n, err := handleItemCasting(k, iface)
+				err := handleItemCasting(k, &pointerSetter{ptr: pptr})
 				if err != nil {
-					return false, err
+					return err
 				}
-				if n {
-					return false, errors.New("key cannot be nil")
-				}
+				reflectKey = pptr.Elem()
 
 				// Create a new version of the value with the reflect type.
-				reflectValue := reflect.New(valueType)
-				iface = reflectValue.Interface()
+				reflectValue := reflect.Zero(valueType)
+				pptr = reflect.New(reflect.PtrTo(reflectValue.Type()).Elem())
+				pptr.Elem().Set(reflectValue)
 
 				// Handle the item casting for the value.
-				n, err = handleItemCasting(v, iface)
+				err = handleItemCasting(v, &pointerSetter{ptr: pptr})
 				if err != nil {
-					return false, err
+					return err
 				}
+				reflectValue = pptr.Elem()
 
 				// Set the item.
-				if !n {
-					m.SetMapIndex(reflectKey.Elem(), reflectValue.Elem())
+				if !pptr.IsNil() {
+					m.SetMapIndex(reflectKey, reflectValue)
 				}
 			}
 
-			// Set the pointer to this map.
-			r.Elem().Set(m)
-
-			// Return no errors.
-			return false, nil
+			// Create the pointer.
+			ptr := reflect.New(reflect.PtrTo(e).Elem())
+			ptr.Elem().Set(m)
+			return setter.set(ptr)
 		}
 	}
 
 	// Return unknown type error.
-	return false, errors.New("unable to unpack to pointer specified")
+	return errors.New("unable to unpack to pointer specified")
 }
 
 // Used to process an atom during unpacking.
@@ -367,7 +333,7 @@ func processAtom(Data []byte) interface{} {
 }
 
 // Processes a item.
-func processItem(Ptr interface{}, r *bytes.Reader) error {
+func processItem(setter *pointerSetter, r *bytes.Reader) error {
 	// Gets the type of data.
 	DataType, err := r.ReadByte()
 	if err != nil {
@@ -375,7 +341,7 @@ func processItem(Ptr interface{}, r *bytes.Reader) error {
 	}
 	var Item interface{}
 	switch DataType {
-	case 's': // This is an atom.
+	case 's': // atom
 		// Get the atom information.
 		if r.Len() == 0 {
 			// Byte slice is too small.
@@ -398,9 +364,9 @@ func processItem(Ptr interface{}, r *bytes.Reader) error {
 			Total++
 		}
 		Item = processAtom(Data)
-	case 'j': // Blank list.
+	case 'j': // blank list
 		Item = []interface{}{}
-	case 'l': // List.
+	case 'l': // list
 		// Get the length of the list.
 		lengthBytes := make([]byte, 4)
 		_, err := r.Read(lengthBytes)
@@ -413,13 +379,13 @@ func processItem(Ptr interface{}, r *bytes.Reader) error {
 		Item = make([]interface{}, l)
 		for i := 0; i < int(l); i++ {
 			var x interface{}
-			err := processItem(&x, r)
+			err := processItem(&pointerSetter{ptr: reflect.ValueOf(&x)}, r)
 			if err != nil {
 				return err
 			}
 			Item.([]interface{})[i] = x
 		}
-	case 'm': // String.
+	case 'm': // string
 		// Get the length of the string.
 		lengthBytes := make([]byte, 4)
 		_, err := r.Read(lengthBytes)
@@ -436,7 +402,7 @@ func processItem(Ptr interface{}, r *bytes.Reader) error {
 		if err != nil {
 			return errors.New("string length is longer than remainder of array")
 		}
-	case 'a': // Small int.
+	case 'a': // small int
 		i, err := r.ReadByte()
 		if err != nil {
 			return errors.New("failed to read small int")
@@ -518,7 +484,7 @@ func processItem(Ptr interface{}, r *bytes.Reader) error {
 		for i := uint32(0); i < l; i++ {
 			// Get the key.
 			var Key interface{}
-			err := processItem(&Key, r)
+			err := processItem(&pointerSetter{ptr: reflect.ValueOf(&Key)}, r)
 			if err != nil {
 				return err
 			}
@@ -530,7 +496,7 @@ func processItem(Ptr interface{}, r *bytes.Reader) error {
 
 			// Get the value.
 			var Value interface{}
-			err = processItem(&Value, r)
+			err = processItem(&pointerSetter{ptr: reflect.ValueOf(&Value)}, r)
 			if err != nil {
 				return err
 			}
@@ -546,20 +512,14 @@ func processItem(Ptr interface{}, r *bytes.Reader) error {
 	}
 
 	// Handle the item casting.
-	nillable, err := handleItemCasting(Item, Ptr)
-	if err != nil {
-		return err
-	}
-	if nillable {
-		return errors.New("nillable type used without pointer to pointer")
-	}
-	return nil
+	return handleItemCasting(Item, setter)
 }
 
 // Unpack is used to unpack a value to a pointer.
 func Unpack(Data []byte, Ptr interface{}) error {
 	// Check if the ptr is actually a pointer.
-	if reflect.ValueOf(Ptr).Kind() != reflect.Ptr {
+	v := &pointerSetter{ptr: reflect.ValueOf(Ptr)}
+	if v.ptr.Kind() != reflect.Ptr {
 		return errors.New("invalid pointer")
 	}
 
@@ -584,5 +544,5 @@ func Unpack(Data []byte, Ptr interface{}) error {
 	}
 
 	// Return the data unpacking.
-	return processItem(Ptr, r)
+	return processItem(v, r)
 }
