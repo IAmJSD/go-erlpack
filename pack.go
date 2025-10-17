@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/jakemakesstuff/structs"
 	"reflect"
 	"unsafe"
+
+	"github.com/iamjsd/structs"
 )
 
 // INITIAL_ALLOC is the initial allocation.

@@ -5,10 +5,11 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"github.com/jakemakesstuff/structs"
 	"io"
 	"reflect"
 	"unsafe"
+
+	"github.com/iamjsd/structs"
 )
 
 // Contains all the types we want internally for our reader.
